@@ -404,6 +404,51 @@ CSS = """
         padding: 20px 0;
         border-bottom: 1px solid var(--border);
     }
+    /* --- COMMENTS SECTION --- */
+    .comments-section { 
+        margin-top: 24px; 
+        border-top: 1px solid var(--border); 
+        padding-top: 20px; 
+    }
+    .comment-form { 
+        display: flex; 
+        flex-direction: column; 
+        gap: 10px; 
+        margin-bottom: 30px; 
+    }
+    .comment-form textarea { 
+        resize: none; 
+        border-radius: 8px; 
+        padding: 12px; 
+    }
+    .comment-item { 
+        display: flex; 
+        gap: 12px; 
+        margin-bottom: 20px; 
+    }
+    .comment-avatar { 
+        width: 40px; height: 40px; background: var(--primary); 
+        color: white; border-radius: 50%; display: flex; 
+        align-items: center; justify-content: center; font-weight: bold; 
+    }
+    .comment-content { 
+        flex: 1; 
+    }
+    .comment-author { 
+        font-size: 0.85rem; 
+        font-weight: bold; 
+        margin-bottom: 4px; 
+    }
+    .comment-text { 
+        font-size: 0.95rem; 
+        line-height: 1.4; 
+    }
+    .comment-date { 
+        font-size: 0.8rem; 
+        color: var(--text-sec); 
+        margin-left: 8px; 
+        font-weight: normal; 
+    }
 </style>
 
 <script>
@@ -570,10 +615,8 @@ def render_index(videos, page_title, has_next, sort_type, query):
     return render_base(content, path=path, query=query)
 
 def render_watch(video, suggestions):
-    """ Renders the Watch page """
-    recs_html = ""
-    for v in suggestions:
-        recs_html += f"""
+    """ Renders the Watch page with Comments """
+    recs_html = "".join([f"""
         <a href="/watch/{v['id']}" class="suggested-card">
             <div class="suggested-thumb">
                 <video preload="metadata"><source src="/static/videos/{v['filename']}#t=1"></video>
@@ -582,15 +625,24 @@ def render_watch(video, suggestions):
                 <h4>{v['title']}</h4>
                 <div class="meta-text">{v.get('views',0)} views • {v['date']}</div>
             </div>
-        </a>
-        """
+        </a>""" for v in suggestions])
+
+    # Генерація списку коментарів
+    comments_list = video.get('comments', [])
+    comments_html = "".join([f"""
+        <div class="comment-item">
+            <div class="comment-avatar">{c['author'][0].upper()}</div>
+            <div class="comment-content">
+                <div class="comment-author">{c['author']} <span class="comment-date">{c['date']}</span></div>
+                <div class="comment-text">{c['text']}</div>
+            </div>
+        </div>""" for c in reversed(comments_list)])
 
     content = f"""
     <div class="watch-container">
         <div class="primary-col">
             <video class="video-player-large" controls autoplay>
                 <source src="/static/videos/{video['filename']}" type="video/mp4">
-                Your browser does not support video.
             </video>
             <div class="watch-meta">
                 <div class="watch-header">
@@ -602,6 +654,16 @@ def render_watch(video, suggestions):
                     <div class="watch-text">{video['description']}</div>
                 </div>
             </div>
+
+            <div class="comments-section">
+                <h3>{len(comments_list)} Comments</h3>
+                <div class="comment-form">
+                    <input type="text" id="comment-author" placeholder="Your name" style="margin-bottom:10px; width:200px;">
+                    <textarea id="comment-text" rows="3" placeholder="Add a comment..."></textarea>
+                    <button class="btn-primary" style="align-self: flex-end; margin-top:10px;" onclick="submitComment('{video['id']}')">Comment</button>
+                </div>
+                <div id="comments-container">{comments_html}</div>
+            </div>
         </div>
         <div class="secondary-col">
             <h3 style="margin-top: 0;">Recommended</h3>
@@ -609,23 +671,26 @@ def render_watch(video, suggestions):
         </div>
     </div>
     <script>
+        function submitComment(videoId) {{
+            const author = document.getElementById('comment-author').value || "Anonymous";
+            const text = document.getElementById('comment-text').value;
+            if(!text) return;
+
+            fetch('/api/comment', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ video_id: videoId, author: author, text: text }})
+            }}).then(r => r.json()).then(data => {{
+                if(data.success) location.reload(); 
+            }});
+        }}
+        
         function checkSaveStatus(id) {{
             const saved = JSON.parse(localStorage.getItem('savedVideos')||'[]');
             const btn = document.getElementById('save-btn');
             if(saved.includes(id)) {{ 
-                btn.innerHTML='✅ Saved'; 
-                btn.style.background='var(--border)'; 
-            }} else {{ 
-                btn.innerHTML='🔖 Save'; 
-                btn.style.background='var(--hover)'; 
+                btn.innerHTML='✅ Saved'; btn.style.background='var(--border)'; 
             }}
-        }}
-        function toggleSave(id) {{
-            let saved = JSON.parse(localStorage.getItem('savedVideos')||'[]');
-            if(saved.includes(id)) saved = saved.filter(x => x!==id); 
-            else saved.push(id);
-            localStorage.setItem('savedVideos', JSON.stringify(saved));
-            checkSaveStatus(id);
         }}
         checkSaveStatus('{video['id']}');
     </script>
@@ -965,6 +1030,29 @@ class VideoHandler(http.server.SimpleHTTPRequestHandler):
             self.send_response(303)
             self.send_header('Location', '/')
             self.end_headers()
+        # comments post request
+        if self.path == '/api/comment':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            videos = get_db()
+            for v in videos:
+                if v['id'] == data['video_id']:
+                    if 'comments' not in v: v['comments'] = []
+                    v['comments'].append({
+                        'author': data['author'],
+                        'text': data['text'],
+                        'date': datetime.now().strftime("%b %d, %Y")
+                    })
+                    break
+            save_db(videos)
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'success': True}).encode())
+            return
 
 # ==========================================
 #           SERVER STARTUP
